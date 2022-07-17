@@ -61,7 +61,7 @@ class Database(DatabaseInterface):
         return self.cursor.fetchmany(limits)
 
     def fetchone(self):
-        return self.fetchone()
+        return self.cursor.fetchone()
 
     def execute(self, query, query_args):
         self.cursor.execute(query, query_args)
