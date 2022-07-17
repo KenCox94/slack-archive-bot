@@ -5,7 +5,8 @@ import traceback
 
 from slack_bolt import App
 
-from utils import db_connect, migrate_db
+from utils import db_connect, migrate_db, select_db
+
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
@@ -23,11 +24,18 @@ parser.add_argument(
 parser.add_argument(
     "-p", "--port", default=3333, help="Port to serve on. (default = 3333)"
 )
+parser.add_argument(
+    "-db",
+    "--database-type",
+    default="sqlite",
+    help=("specify the database type. (default = sqlite)"),
+)
 cmd_args, unknown = parser.parse_known_args()
 
 # Check the environment too
 log_level = os.environ.get("ARCHIVE_BOT_LOG_LEVEL", cmd_args.log_level)
-database_path = os.environ.get("ARCHIVE_BOT_DATABASE_PATH", cmd_args.database_path)
+database_path = os.environ.get(
+    "ARCHIVE_BOT_DATABASE_PATH", cmd_args.database_path)
 port = os.environ.get("ARCHIVE_BOT_PORT", cmd_args.port)
 
 # Setup logging
@@ -43,13 +51,36 @@ app = App(
     logger=logger,
 )
 
+db = select_db(database_type)
+
 # Save the bot user's user ID
 app._bot_user_id = app.client.auth_test()["user_id"]
 
 # Uses slack API to get most recent user list
 # Necessary for User ID correlation
-def update_users(conn, cursor):
-    logger.info("Updating users")
+
+
+def get_channels():
+    channels = app.client.conversations_list(types="public_channel,private_channel")[
+        "channels"
+    ]
+
+    channel_args = []
+    member_args = []
+    for channel in channels:
+        if channel["is_member"]:
+            channel_id, channel_name, channel_is_private, members = get_channel_info(
+                channel["id"]
+            )
+
+            channel_args.append((channel_name, channel_id, channel_is_private))
+
+            member_args += members
+
+    return channel_args, member_args
+
+
+def get_users():
     info = app.client.users_list()
 
     args = []
@@ -64,7 +95,12 @@ def update_users(conn, cursor):
                 ),
             )
         )
-    cursor.executemany("INSERT INTO users(name, id, avatar) VALUES(?,?,?)", args)
+    return args
+
+def update_users(conn, cursor):
+    logger.info("Updating users")
+    cursor.executemany(
+        "INSERT INTO users(name, id, avatar) VALUES(?,?,?)", args)
     conn.commit()
 
 
@@ -86,31 +122,6 @@ def get_channel_info(channel_id):
         channel["is_private"],
         [(channel["id"], m) for m in members],
     )
-
-
-def update_channels(conn, cursor):
-    logger.info("Updating channels")
-    channels = app.client.conversations_list(types="public_channel,private_channel")[
-        "channels"
-    ]
-
-    channel_args = []
-    member_args = []
-    for channel in channels:
-        if channel["is_member"]:
-            channel_id, channel_name, channel_is_private, members = get_channel_info(
-                channel["id"]
-            )
-
-            channel_args.append((channel_name, channel_id, channel_is_private))
-
-            member_args += members
-
-    cursor.executemany(
-        "INSERT INTO channels(name, id, is_private) VALUES(?,?,?)", channel_args
-    )
-    cursor.executemany("INSERT INTO members(channel, user) VALUES(?,?)", member_args)
-    conn.commit()
 
 
 def handle_query(event, cursor, say):
@@ -181,7 +192,8 @@ def handle_query(event, cursor, say):
                 (channels.is_private <> 1 OR members.user = (?)) AND
                 messages.message LIKE (?)
         """
-        query_args = [app._bot_user_id, event["user"], "%" + " ".join(text) + "%"]
+        query_args = [app._bot_user_id,
+                      event["user"], "%" + " ".join(text) + "%"]
 
         if user_name:
             query += " AND users.name = (?)"
@@ -230,7 +242,8 @@ def handle_join(event):
             "INSERT INTO channels(name, id, is_private) VALUES(?,?,?)",
             (channel_id, channel_name, channel_is_private),
         )
-        cursor.executemany("INSERT INTO members(channel, user) VALUES(?,?)", members)
+        cursor.executemany(
+            "INSERT INTO members(channel, user) VALUES(?,?)", members)
     else:
         cursor.execute(
             "INSERT INTO members(channel, user) VALUES(?,?)",
@@ -254,7 +267,8 @@ def handle_rename(event):
     channel = event["channel"]
     conn, cursor = db_connect(database_path)
     cursor.execute(
-        "UPDATE channels SET name = ? WHERE id = ?", (channel["name"], channel["id"])
+        "UPDATE channels SET name = ? WHERE id = ?", (
+            channel["name"], channel["id"])
     )
     conn.commit()
 
@@ -287,7 +301,8 @@ def handle_user_change(event):
     new_username = event["user"]["profile"]["display_name"]
 
     conn, cursor = db_connect(database_path)
-    cursor.execute("UPDATE users SET name = ? WHERE id = ?", (new_username, user_id))
+    cursor.execute("UPDATE users SET name = ? WHERE id = ?",
+                   (new_username, user_id))
     conn.commit()
 
 
@@ -306,7 +321,8 @@ def handle_message(message, say):
     else:  # Otherwise save the message to the archive.
         cursor.execute(
             "INSERT INTO messages VALUES(?, ?, ?, ?)",
-            (message["text"], message["user"], message["channel"], message["ts"]),
+            (message["text"], message["user"],
+             message["channel"], message["ts"]),
         )
         conn.commit()
 
@@ -342,17 +358,18 @@ def handle_message_changed(event):
 
 def init():
     # Initialize the DB if it doesn't exist
-    conn, cursor = db_connect(database_path)
-    migrate_db(conn, cursor)
-
+    users = get_users()
+    channels, members = get_channels()
+    with db as connection:
+        connection.migrate() // may need to have query build
     # Update the users and channels in the DB and in the local memory mapping
-    update_users(conn, cursor)
-    update_channels(conn, cursor)
+        connection.update_users( users )
+        connection.update_channel_members( channels, members )
+
 
 
 def main():
     init()
-
     # Start the development server
     app.start(port=port)
 
