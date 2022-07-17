@@ -5,7 +5,7 @@ import traceback
 
 from slack_bolt import App
 
-from utils import db_connect, migrate_db, select_db
+from utils import select_db
 
 
 parser = argparse.ArgumentParser()
@@ -95,13 +95,6 @@ def get_users():
                 ),
             )
         )
-    return args
-
-def update_users(conn, cursor):
-    logger.info("Updating users")
-    cursor.executemany(
-        "INSERT INTO users(name, id, avatar) VALUES(?,?,?)", args)
-    conn.commit()
 
 
 def get_channel_info(channel_id):
@@ -124,7 +117,7 @@ def get_channel_info(channel_id):
     )
 
 
-def handle_query(event, cursor, say):
+def handle_query(event, say):
     """
     Handles a DM to the bot that is requesting a search of the archives.
 
@@ -140,137 +133,124 @@ def handle_query(event, cursor, say):
         limit: The number of responses to return. Default 10.
     """
     try:
-        text = []
-        user_name = None
-        channel_name = None
-        sort = None
-        limit = 10
+        with db as db_impl:
+            text = []
+            user_name = None
+            channel_name = None
+            sort = None
+            limit = 10
 
-        params = event["text"].lower().split()
-        for p in params:
-            # Handle emoji
-            # usual format is " :smiley_face: "
-            if len(p) > 2 and p[0] == ":" and p[-1] == ":":
-                text.append(p)
-                continue
+            params = event["text"].lower().split()
+            for p in params:
+                # Handle emoji
+                # usual format is " :smiley_face: "
+                if len(p) > 2 and p[0] == ":" and p[-1] == ":":
+                    text.append(p)
+                    continue
 
-            p = p.split(":")
+                p = p.split(":")
 
-            if len(p) == 1:
-                text.append(p[0])
-            if len(p) == 2:
-                if p[0] == "from":
-                    user_name = p[1]
-                if p[0] == "in":
-                    channel_name = p[1].replace("#", "").strip()
-                if p[0] == "sort":
-                    if p[1] in ["asc", "desc"]:
-                        sort = p[1]
-                    else:
-                        raise ValueError("Invalid sort order %s" % p[1])
-                if p[0] == "limit":
-                    try:
-                        limit = int(p[1])
-                    except:
-                        raise ValueError("%s not a valid number" % p[1])
+                if len(p) == 1:
+                    text.append(p[0])
+                if len(p) == 2:
+                    if p[0] == "from":
+                        user_name = p[1]
+                    if p[0] == "in":
+                        channel_name = p[1].replace("#", "").strip()
+                    if p[0] == "sort":
+                        if p[1] in ["asc", "desc"]:
+                            sort = p[1]
+                        else:
+                            raise ValueError("Invalid sort order %s" % p[1])
+                    if p[0] == "limit":
+                        try:
+                            limit = int(p[1])
+                        except:
+                            raise ValueError("%s not a valid number" % p[1])
 
-        query = f"""
-            SELECT DISTINCT
-                messages.message, messages.user, messages.timestamp, messages.channel
-            FROM messages
-            INNER JOIN users ON messages.user = users.id
-            -- Only query channel that archive bot is a part of
-            INNER JOIN (
-                SELECT * FROM channels
-                INNER JOIN members ON
-                    channels.id = members.channel AND
-                    members.user = (?)
-            ) as channels ON messages.channel = channels.id
-            INNER JOIN members ON channels.id = members.channel
-            WHERE
-                -- Only return messages that are in public channels or the user is a member of
-                (channels.is_private <> 1 OR members.user = (?)) AND
-                messages.message LIKE (?)
-        """
-        query_args = [app._bot_user_id,
-                      event["user"], "%" + " ".join(text) + "%"]
+            query = f"""
+                SELECT DISTINCT
+                    messages.message, messages.user, messages.timestamp, messages.channel
+                FROM messages
+                INNER JOIN users ON messages.user = users.id
+                -- Only query channel that archive bot is a part of
+                INNER JOIN (
+                    SELECT * FROM channels
+                    INNER JOIN members ON
+                        channels.id = members.channel AND
+                        members.user = (?)
+                ) as channels ON messages.channel = channels.id
+                INNER JOIN members ON channels.id = members.channel
+                WHERE
+                    -- Only return messages that are in public channels or the user is a member of
+                    (channels.is_private <> 1 OR members.user = (?)) AND
+                    messages.message LIKE (?)
+            """
+            query_args = [app._bot_user_id,
+                          event["user"], "%" + " ".join(text) + "%"]
 
-        if user_name:
-            query += " AND users.name = (?)"
-            query_args.append(user_name)
-        if channel_name:
-            query += " AND channels.name = (?)"
-            query_args.append(channel_name)
-        if sort:
-            query += " ORDER BY messages.timestamp %s" % sort
+            if user_name:
+                query += " AND users.name = (?)"
+                query_args.append(user_name)
+            if channel_name:
+                query += " AND channels.name = (?)"
+                query_args.append(channel_name)
+            if sort:
+                query += " ORDER BY messages.timestamp %s" % sort
 
-        logger.debug(query)
-        logger.debug(query_args)
+            logger.debug(query)
+            logger.debug(query_args)
 
-        cursor.execute(query, query_args)
+            db_impl.query(query, query_args)
 
-        res = cursor.fetchmany(limit)
-        res_message = None
-        if res:
-            logger.debug(res)
-            res_message = "\n".join(
-                [
-                    "*<@%s>* _<!date^%s^{date_pretty} {time}|A while ago>_ _<#%s>_\n%s\n\n"
-                    % (i[1], int(float(i[2])), i[3], i[0])
-                    for i in res
-                ]
-            )
-        if res_message:
-            say(res_message)
-        else:
-            say("No results found")
-    except ValueError as e:
-        logger.error(traceback.format_exc())
-        say(str(e))
+            res = db.fetchmany(limit)
+            res_message = None
+            if res:
+                logger.debug(res)
+                res_message = "\n".join(
+                    [
+                        "*<@%s>* _<!date^%s^{date_pretty} {time}|A while ago>_ _<#%s>_\n%s\n\n"
+                        % (i[1], int(float(i[2])), i[3], i[0])
+                        for i in res
+                    ]
+                )
+            if res_message:
+                say(res_message)
+            else:
+                say("No results found")
+        except ValueError as e:
+            logger.error(traceback.format_exc())
+            say(str(e))
 
 
 @app.event("member_joined_channel")
 def handle_join(event):
-    conn, cursor = db_connect(database_path)
-
-    # If the user added is archive bot, then add the channel too
-    if event["user"] == app._bot_user_id:
-        channel_id, channel_name, channel_is_private, members = get_channel_info(
-            event["channel"]
-        )
-        cursor.execute(
-            "INSERT INTO channels(name, id, is_private) VALUES(?,?,?)",
-            (channel_id, channel_name, channel_is_private),
-        )
-        cursor.executemany(
-            "INSERT INTO members(channel, user) VALUES(?,?)", members)
-    else:
-        cursor.execute(
-            "INSERT INTO members(channel, user) VALUES(?,?)",
-            (event["channel"], event["user"]),
-        )
-
-    conn.commit()
+    with db as db_impl:
+        # If the user added is archive bot, then add the channel too
+        members = (event["channel"], event["user"])
+        if event["user"] == app._bot_user_id:
+            channel_id, channel_name, channel_is_private, members = get_channel_info(
+                event["channel"])
+            db_impl.insert_channels(
+                channel_id, channel_name, channel_is_private)
+            db_impl.insert_members(members)
+        else:
+            db.impl.insert_members((event["channel"], event["user"]))
 
 
 @app.event("member_left_channel")
 def handle_left(event):
-    conn, cursor = db_connect(database_path)
-    cursor.execute(
-        "DELETE FROM members WHERE channel = ? AND user = ?",
-        (event["channel"], event["user"]),
-    )
-    conn.commit()
+    with db as db_impl:
+        query = "DELETE FROM members WHERE channel = ? AND user = ?"
+        db_impl.execute(query, (event["channel"], event["user"]))
 
 
 def handle_rename(event):
     channel = event["channel"]
-    conn, cursor = db_connect(database_path)
-    cursor.execute(
-        "UPDATE channels SET name = ? WHERE id = ?", (
-            channel["name"], channel["id"])
-    )
-    conn.commit()
+    with db as db_impl:
+        query = "UPDATE channels SET name = ? WHERE id = ?"
+        query_args = (channel["name"], channel["id"])
+        db_impl.execute(query, query_args)
 
 
 @app.event("channel_rename")
@@ -299,11 +279,10 @@ def handle_channel_name():
 def handle_user_change(event):
     user_id = event["user"]["id"]
     new_username = event["user"]["profile"]["display_name"]
-
-    conn, cursor = db_connect(database_path)
-    cursor.execute("UPDATE users SET name = ? WHERE id = ?",
-                   (new_username, user_id))
-    conn.commit()
+    with db as db_impl:
+        query = "UPDATE users SET name = ? WHERE id = ?"
+        query_args = (new_username, user_id)
+        db_impl.execute(query, query_args)
 
 
 def handle_message(message, say):
@@ -311,26 +290,27 @@ def handle_message(message, say):
     if "text" not in message or message["user"] == "USLACKBOT":
         return
 
-    conn, cursor = db_connect(database_path)
-
-    # If it's a DM, treat it as a search query
     if message["channel_type"] == "im":
-        handle_query(message, cursor, say)
+        handle_query(message, say)
     elif "user" not in message:
         logger.warning("No valid user. Previous event not saved")
     else:  # Otherwise save the message to the archive.
-        cursor.execute(
-            "INSERT INTO messages VALUES(?, ?, ?, ?)",
-            (message["text"], message["user"],
-             message["channel"], message["ts"]),
-        )
-        conn.commit()
+        with db as db_impl:
+            query = "INSERT INTO messages VALUES(?, ?, ?, ?)"
+            query_args = (message["text"], message["user"],
+                          message["channel"], message["ts"])
+            db_impl.execute(query, query_args)
+
+    # If it's a DM, treat it as a search quer
 
         # Ensure that the user exists in the DB
-        cursor.execute("SELECT * FROM users WHERE id = ?", (message["user"],))
-        row = cursor.fetchone()
-        if row is None:
-            update_users(conn, cursor)
+    with db as db_impl:
+        query = "SELECT id FROM users WHERE id = ?"
+        query_args = (message["user"],)
+        db_impl.execute(query, query_args)
+        res = db_impl.fetchone()
+        if not res:
+            db_impl.insert_users(message["user"])
 
     logger.debug("--------------------------")
 
@@ -348,24 +328,24 @@ def handle_message_thread_broadcast(event, say):
 @app.event({"type": "message", "subtype": "message_changed"})
 def handle_message_changed(event):
     message = event["message"]
-    conn, cursor = db_connect(database_path)
-    cursor.execute(
-        "UPDATE messages SET message = ? WHERE user = ? AND channel = ? AND timestamp = ?",
-        (message["text"], message["user"], event["channel"], message["ts"]),
-    )
-    conn.commit()
+    with db as db_impl:
+        query = "UPDATE messages SET message = ? WHERE user = ? AND channel = ? AND timestamp = ?"
+        query_args = (message["text"], message["user"],
+                      event["channel"], message["ts"])
+        db_impl.execute(query, query_args)
 
 
 def init():
     # Initialize the DB if it doesn't exist
     users = get_users()
     channels, members = get_channels()
-    with db as connection:
-        connection.migrate() // may need to have query build
+    with db as db_impl:
+        db_impl.migrate()
     # Update the users and channels in the DB and in the local memory mapping
-        connection.update_users( users )
-        connection.update_channel_members( channels, members )
-
+        logger.info("Updating users")
+        db_impl.update_users(users)
+        logger.info("Updating channels")
+        db_impl.update_channel_members(channels, members)
 
 
 def main():

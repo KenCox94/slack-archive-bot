@@ -3,7 +3,6 @@ import json
 from abc import ABC, abstractmethod
 
 
-
 class DatabaseInterface(ABC):
     """
     Interface for data access
@@ -43,17 +42,29 @@ class DatabaseInterface(ABC):
 
 
 class Database(DatabaseInterface):
-    """
-    DAO for POSTGRESQL / DragonFireDB
-    """
 
-    def __init__(self, impl):
-        self.connection = impl
-        self.cursor = impl.cursor()
+    def __init__(self, impl, config):
+        self.impl = impl
+        self.config = config
+        self.connection = None
+        self.cursor = None
 
     def connect(self):
         if self.connection is None:
-            self.connection = pymysql.connect(**self.config)
+            self.connection = self.impl.connect(**self.config)
+        self.cursor = self.connection.cursor()
+
+    def query(self, query: str, query_args: list):
+        self.cursor.execute(query, query_args)
+
+    def fetchmany(self, limits: int):
+        return self.cursor.fetchmany(limits)
+
+    def fetchone(self):
+        return self.fetchone()
+
+    def execute(self, query, query_args):
+        self.cursor.execute(query, query_args)
 
     def close(self):
         if self.cursor:
@@ -62,9 +73,9 @@ class Database(DatabaseInterface):
         if self.connection:
             self.connection.close()
 
-    def update_users( self, users: list ):
+    def update_users(self, users: list):
         self.cursor.executemany(
-            "INSERT INTO users(name, id, avatar) VALUES(?,?,?)", users )
+            "INSERT INTO users(name, id, avatar) VALUES(?,?,?)", users)
 
     def update_channels(self, channel_args, member_args):
         self.cursor.executemany(
@@ -124,3 +135,13 @@ class Database(DatabaseInterface):
             )
         except:
             pass
+
+    def insert_channels(self, channel_id, channel_name, channel_is_private):
+        self.cursor.execute(
+            "INSERT INTO channels(name, id, is_private) VALUES(?,?,?)",
+            (channel_id, channel_name, channel_is_private),
+        )
+
+    def insert_members(self, members):
+        self.cursor.executemany(
+            "INSERT INTO members(channel, user) VALUES(?,?)", members)
