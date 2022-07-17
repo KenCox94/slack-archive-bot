@@ -95,6 +95,7 @@ def get_users():
                 ),
             )
         )
+    return args
 
 
 def get_channel_info(channel_id):
