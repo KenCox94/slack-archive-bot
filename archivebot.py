@@ -133,6 +133,7 @@ def handle_query(event, say):
             or desc if you want to start from the newest. Default asc.
         limit: The number of responses to return. Default 10.
     """
+
     try:
         with db as db_impl:
             text = []
@@ -219,9 +220,9 @@ def handle_query(event, say):
                 say(res_message)
             else:
                 say("No results found")
-        except ValueError as e:
-            logger.error(traceback.format_exc())
-            say(str(e))
+    except ValueError as e:
+        logger.error(traceback.format_exc())
+        say(str(e))
 
 
 @app.event("member_joined_channel")
